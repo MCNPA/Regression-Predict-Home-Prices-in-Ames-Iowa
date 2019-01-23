@@ -1,0 +1,344 @@
+---
+title: "Regression: Predicting Home Prices"
+output:
+  html_document: 
+    pandoc_args: [
+      "--number-sections",
+    ]
+---
+
+###  Abstract
+
+The purpose of this project is predict housing prices in Ames, Iowa using regression.  Model evaluation is conducted using root-mean-square-error.
+
+Load Packages
+
+```{r packages, message = FALSE}
+library(statsr)
+library(dplyr)
+library(BAS)
+library(ggplot2)
+library(MASS)
+library(scales)
+```
+
+
+Load Data
+```{r load, message = FALSE}
+load("ames_train.gz")
+ames_train$age = 2018 - ames_train$Year.Built
+ames_train$total.bath = ames_train$Full.Bath + (.5 * ames_train$Half.Bath)
+
+#cleaning data to only include only normal sale conditions
+ames_train = ames_train %>%
+  filter(Sale.Condition == "Normal")
+
+
+
+```
+
+
+
+###  Exploratory Data Analysis (EDA)
+
+The distribution of home prices were right-skewed, with the median home price being $155,000.  As we would expect, the home's square footage (area) had a positive relationship with price.  However, after plotting price vs area and log(price) vs log(area), we see that transforming the variables improves linearity.  In fact, log transformation improved linearity for age and all the other continous variables that we used in the model.  Many of the categorical variables behaved as expected. For instance the higher the quality of the home, the higher the sale price; the same is true for the number of bathrooms.  Two potentially important categorical variables that behaved unexpectedly were number of bedrooms and Home condition.  Higher condition ratings or more bathrooms did not equate to a higher sales price.  Also, there are very few pools and they do not appear to show any relationship with price.
+
+```{r}
+ggplot(ames_train, aes(x = area, y= price)) + 
+  geom_jitter(shape = 1, alpha = .7) + 
+  stat_smooth(method = lm, se = TRUE) + 
+  theme_classic() + 
+  labs(title = "Non-transformed Variables") + 
+  scale_y_continuous(labels = dollar)
+
+ggplot(ames_train, aes(x = log(area), y= log(price))) + 
+  geom_jitter(shape = 1, alpha = .7) + 
+  stat_smooth(method = lm, se = TRUE) + 
+  theme_classic() + 
+  labs(title = "Log-Transformed Variables")  
+  
+
+```
+
+After plotting each continous explanatory variable against price, I decided that log-transformation improved linearity and/or homoskedasticity in all cases.  In the example plots below of price vs area, you can see that linearity and homoskedasticity were greatly improved by transforming the variables.
+
+
+
+
+```{r}
+#price and overall condition
+
+ggplot(ames_train, aes(x=as.factor(Overall.Cond), y = log(price))) +
+  geom_boxplot(varwidth = TRUE) + 
+  theme_classic()+
+  labs(title = "Price vs Home Condition", x = "Condition Rating")
+
+
+```
+
+
+
+
+
+
+```{r}
+#bedrooms and price
+ggplot(ames_train, aes(x = as.factor(Bedroom.AbvGr), y=log(price))) + 
+  geom_boxplot() + 
+  theme_classic()+
+  labs(title = "Price vs Number of Bedrooms", y = "Log(price)", x = "Number of Bedrooms")
+
+```
+
+
+
+## Model Building
+
+I used linear regression to predict the home's price as explained by square footage, lot square footage, neighborhood, overall quality, overall condition, central air conditioning, age, number of bathrooms, number of bedrooms, garage size, land slope, basement square feet, paved driveway, and wood deck. 
+
+The initial model shows high goodness-of-fit with an adjusted R^2 value of 0.924.  
+
+Most of the variables are significant at the 5% level--meaning that, for each variable, the chances of seeing an effect of this size due to random chance is less than 5%. Total Bath and Paved Driveway do not appear to be significant.
+
+Surpisingly the number of bedroom coefficient is negative.  This means that, according to our model, higher numbers of bathrooms and bedrooms translate to a lower sales price.  This is most likely due to multicollinearity with the area variable.  I would interpret this situation as: homebuyers prefer fewer rooms for a given size house.
+
+```{r fit_model}
+#build linear model
+ames_train$age = 2018 - ames_train$Year.Built
+ames_train$total.bath = ames_train$Full.Bath + (.5 * ames_train$Half.Bath)
+model.full = lm(log(price) ~ log(area) + log(Lot.Area) + Neighborhood + Overall.Qual +
+                Overall.Cond + Central.Air + log(age) + total.bath + Bedroom.AbvGr + Garage.Cars + Land.Slope + 
+                log(Total.Bsmt.SF+1) + Paved.Drive + log(Pool.Area + 1) + (Wood.Deck.SF+1),
+                data = ames_train)
+#model summary
+summary(model.full)
+
+
+```
+
+
+
+### Model Selection
+
+
+Two methods of selection were used to improve the initial model (model.full).  The first method is called stepAIC, which is a method of selection that weighs goodness-of-fit (least sum of squared residuals) against complexity (the number of variables), to guard against overfitting.  The stepAIC model wound up being very similar to the original model in that it dropped the total bath variable.  
+
+The second method uses bas.lm.  Unlike the first two linear regression models, bas.lm produces a Bayesian regression model. Bayesian regression deals with probabilities of an explanatory variable's inclusion based on the idea that there is one correct model out of all possible models that explains the dependent variable, see the "post p(B != 0)" column in the BAS coeffecients table.  Coeffecients are also probabalistic but normally distributed, so we can use the mean value when making predictions, see the "post mean" column in the same table.  Bayesian Regression produces many different models, and we must have a method to select one. In this case, because the low probability of any one model being the correct model (see "Post Prob" row in the BAS summary output), we are selecting the Bayesian Model Average (BMA) to aggregate the many potential models into one model when making predictions.  The Bayesian model keeps all the variables from the initial model but the coefficients are different.  R^2 is slightly improved from the initial model at 0.913.
+
+```{r model_select}
+#model selection using stepAIC
+model.AIC = stepAIC(model.full, k=2)
+summary(model.AIC)
+```
+
+
+
+```{r}
+
+#summary(ames_train)
+#model selection using BAS.lm
+model.bas = bas.lm(log(price) ~ log(area) + log(Lot.Area) + Overall.Qual+ Overall.Cond+ Central.Air+ log(age)+ total.bath+
+                      Bedroom.AbvGr + Garage.Cars +Land.Slope + log(Total.Bsmt.SF+1) + Paved.Drive +
+                     log(Pool.Area + 1) + (Wood.Deck.SF+1) + Neighborhood,
+                data = ames_train,
+                prior = "AIC",
+                modelprior = uniform())
+```
+
+```{r}
+#BAS model summary
+round(summary(model.bas),3)
+```
+
+```{r }
+#model coefficients
+coef.bas = coef(model.bas, estimator = "BMA")
+coef.bas$postmean = round(coef.bas$postmean, 3)
+coef.bas$postsd = round(coef.bas$postsd, 3)
+coef.bas$postprobs = round(coef.bas$postprobs, 3)
+coef.bas
+```
+
+```{r}
+#visualization of BAS model
+image(model.bas)
+```
+
+
+
+### Initial Model Residuals
+
+Plotting the residuals vs fitted values we see random scatter centered around zero--meaning our model is linear with constant variability.  The histogram of the residuals shows that they are nearly normal with a mean of zero.
+
+Observation 611 in the data set is an outlier and, as such, has the largest residual.  I looked at the individual observation and see that the home is old, small, lacks upgrades, and is in fair-poor condition, but I can see no reason why it should be removed from the data set.  Outliers such as these have large squared errors and affect the model's overall goodness-of-fit, but without a good reason to omit, the outlier it must remain.   
+
+
+```{r}
+#residual plot BAS model
+plot(model.bas, which = 1)
+```
+
+```{r}
+#histogram of residuals
+pred.BAS.train = predict(model.bas, newdata = ames_train, estimator = "BMA")
+res = as.data.frame(exp(pred.BAS.train$fit) - ames_train$price)
+colnames(res) = c("Residual")
+
+ggplot(res, aes(x = Residual))+
+  geom_histogram(bins=60)+
+  theme_classic()+
+  labs(title = "Histogram of BAS model Residuals")  
+```
+
+
+```{r}
+#explore unusual residual from model
+ames_train[611,]
+
+```
+
+
+* * *
+
+###  Model RMSE
+
+Root Mean Squared Error (RMSE) is the square-root of the average squared residual--meaning it is the average amount of error for each predicted price. Conveniently the units are the same for the observation (price) and the RMSE, dollars, so interpretation easy.  In the case of the BAS model, our best model, the average error for each predicted price is $1223  In my opinion, this RMSE is perfectly acceptable when looking at something as expensive as a house.
+
+
+```{r model_rmse}
+#calculate training set RMSE
+#full model RMSE
+pred.full.train = predict(model.full, newdata = ames_train)
+RMSE.full.train = sqrt(mean((exp(pred.full.train) - ames_train$price)^2))
+
+#AIC model RMSE
+pred.AIC.train = predict(model.AIC, newdata=ames_train)
+RMSE.AIC.train = sqrt(mean((exp(pred.AIC.train) - ames_train$price)^2))
+
+#BAS model RMSE
+pred.BAS.train = (predict(model.bas, newdata = ames_train, estimator = "BMA"))
+RMSE.BAS.train = sqrt(mean(exp(pred.BAS.train$fit) - ames_train$price)^2)
+
+#create a data frame
+RMSE.df = data.frame(c("Full Model", "Stepwise AIC Model", "BAS model"),
+                     dollar(c(RMSE.full.train, RMSE.AIC.train, RMSE.BAS.train)))
+colnames(RMSE.df) = c("Model", "RMSE Training Data")
+RMSE.df
+```
+
+* * *
+
+### Overfitting 
+
+Use out of sample data to check the model against overfitting.
+
+```{r loadtest, message = FALSE}
+load("ames_test.gz")
+ames_test = subset(ames_test, Sale.Condition == "Normal")
+ames_test$total.bath = ames_test$Full.Bath + (ames_test$Half.Bath * 0.5)
+ames_test$age = 2018 - ames_test$Year.Built
+
+# the 'Landmrk' neighborhood was not in our training set (meaning we have no data on any houses from this neighborhood in 
+# reflected in our model) so we unable to  make prediction about it in our testing set.
+# Because it is a single observation, I am removing it from the testing set
+# another option would be to change "Landmrk" to the next most similar neighborhood and then make a prediction
+ames_test = subset(ames_test, Neighborhood != 'Landmrk')
+```
+
+
+The RMSE for the BAS model on the testing set is \$2564, double what it was on the training set.  I am not changing the model because some overfitting is to be expected, and \$2564 is still acceptable in my opinion.
+
+
+```{r initmodel_test}
+#calculate testing set RMSE
+#full model RMSE
+pred.full.test = predict(model.full, newdata = ames_test)
+RMSE.full.test = sqrt(mean((exp(pred.full.test) - ames_test$price)^2))
+
+#AIC model RMSE
+pred.AIC.test = predict(model.AIC, newdata=ames_test)
+RMSE.AIC.test = sqrt(mean((exp(pred.AIC.test) - ames_test$price)^2))
+
+#BAS model RMSE
+pred.BAS.test = (predict(model.bas, newdata = ames_test, estimator = "BMA"))
+RMSE.BAS.test = sqrt(mean(exp(pred.BAS.test$fit) - ames_test$price)^2)
+
+#create a data frame
+RMSE.df = data.frame(c("Full Model", "Stepwise AIC Model", "BAS model"),
+                     dollar(c(RMSE.full.train, RMSE.AIC.train, RMSE.BAS.train)),
+                     dollar(c(RMSE.full.test, RMSE.AIC.test, RMSE.BAS.test)))
+colnames(RMSE.df) = c("Model", "RMSE Train Data", "RMSE Test Data")
+RMSE.df
+```
+
+
+###  Model Evaluation
+
+What are some strengths and weaknesses of the model?
+
+A largest strength of the model is accuracy.  The median home price in the out of testing data set is \$162,500 and the average error in our predicted prices is only $2564. 
+
+One weakness of the model is scalability.  The neighborhood catagorical variable makes the model only applicable to Ames, Iowa and only in the listed neighborhoods.  I think a further refinement to the model, that could improve scalability, is a two process algorithm. In lieu of the "neighborhood" variable, I  would recommend adding all of the "macro" variables relating to the home's location (urban vs rural, median surrounding home price, crime rates, school ratings, etc) and then catagorizing each home by its "macro" variables via k-means clustering.  Then, for each cluster, fit a Bayesian regression model based on the home's "micro" variables (area, lot area, condition, etc) to predict price.  This clustering step would be, in effect, creating a proxy for the neighborhood variable.
+
+Another weakness of the model is interpretability. Linear regression is complicated and can be hard to understand to begin with, and Bayesian regression is even more so.  All of the continous variables are log-transformed which detracts from interpretability.  For instance, using non-transformed variables, a 1 square foot increase in home area would increase the price of the home (in dollars) by the coeffecient.  However, using log-transformed variables, we would have to interpret that as: a 1% increase in home's area increases the percentage of the home value by the coeffecient, a slightly less useful form.  Also, the fitted values have to be exponentiated to be put back in their usable form, dollars.  
+
+* * *
+
+### Section 4.4 Final Model Validation
+
+T
+```{r loadvalidation, message = FALSE}
+load("ames_validation.gz")
+ames_validation$total.bath = ames_validation$Full.Bath + (ames_validation$Half.Bath * 0.5)
+ames_validation$age = 2018 - ames_validation$Year.Built
+```
+
+* * *
+
+The final model's RMSE for the validation set is $1648, between the RMSE for the training and testing sets.  Again the model's accuracy and lack of overfitting is demonstrated. 
+
+At a 95% credible interval, our model captured the true home price in 722 out of 763 cases, or 95% of the time.
+
+
+```{r model_validate}
+#RMSE validation data
+pred.val = predict(model.bas, newdata=ames_validation, estimator = "BMA")
+RMSE.val = sqrt(mean(exp(pred.val$fit) - ames_validation$price )^2)
+RMSE.val.df = data.frame(c("Training Set", "Testing Set", "Validation Set"),
+                         dollar(c(RMSE.BAS.train, RMSE.BAS.test, RMSE.val)))
+colnames(RMSE.val.df) = c("Data Set", "RMSE")
+RMSE.val.df
+```
+
+```{r}
+#Confidence Interval validation data
+pred.val.ci = predict(model.bas, newdata=ames_validation, estimator = "BMA",
+                      prediction = TRUE, se.fit = TRUE)
+```
+
+```{r}
+#confidence interval
+CI.bas = (exp(confint(pred.val.ci)))
+CI.df = data.frame(CI.bas[,1], CI.bas[,2], ames_validation$price)
+colnames(CI.df) = c("lower", "upper", "price")
+
+prop_in_CI = CI.df %>%
+  summarize(prop_in = mean(price > lower & price < upper),
+            num_in = sum(price > lower & price < upper),
+            num_out = n() - num_in,
+            n = n())
+
+prop_in_CI
+
+```
+
+
+##  Conclusion
+
+To summarize, we created a Bayesian regression model to predict home prices in the town of Ames, Iowa.  We used square feet, lot square feet, neighborhood, overall quality, overall condition, central air conditioning, age, number of bedrooms, garage size, building type, land slope, basement square feet, paved driveway, pool area, and wood deck square feet as explanatory variables in the final model.  The continous variables and the dependent variable were log-transformed to improve linearity and homoskedasticity.  Predictions for the model were made using the Bayesian Model Average. The model proved to be highly accurate with an R^2 of 0.924 and out of sample RMSE of $1648.  In the validation set, 722 out of 763 true home prices were captured in a 95% credible interval.  Two drawbacks of the model are: interpretability and scalability (see section 4.3 for details.)
+
+In doing this model I learned that it is important to plot each explanatory variable against the dependent variable on a simple scatterplot before building any models.  This helps to reveal relationships, particularly linearity and homoskedasticity, and if the variables should be transformed.  Another great lesson is the importance of fitting many models and comparing results by RMSE. All the models tested had very high R^2 but drastically different RMSE.  If I had stopped at the AIC model based on R^2 and p-value significance, I would have been stuck with an RMSE of over $20,000, which would have been a fairly useless model.
+
+
+
+* * *
